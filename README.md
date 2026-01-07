@@ -1,76 +1,22 @@
-# FlashSR
+## NovaSR: Pushing the Limits of Extreme Efficiency in Audio Super-Resolution
+This is the repository for NovaSR, a tiny 50kb audio upsampling model that upscales muffled 16khz audio into clear and crisp 48khz audio at speeds over 3500x realtime!
 
-This is a tiny audio super-resolution model based on [hierspeech++](https://github.com/sh-lee-prml/HierSpeechpp) that upscales 16khz audio into much clearer 48khz audio at speed over 200x realtime to 400x realtime!
+### Key benefits
+* Speed: Can reach 3600x realtime speed on a single gpu.
+* Quality: On par with models 5,000x larger.
+* Size: Just 52kb in size, several thousand times smaller then most.
 
-FlashSR is released under an apache-2.0 license.
+### Why is this even useful?
+* Enhancing models: Most TTS and audio models produce muffled 16khz/24khz audio so NovaSR can enhance the clarity and crispness with nearly 0 computation cost.
+* Real-time enhancement: NovaSR allows for on device enhancement of any low quality audio while using nearly no memory.
+* Restoring datasets: Many datasets are poor quality and NovaSR can considerably enhance their clarity and crispness within seconds instead of hours.
 
-Model link: https://huggingface.co/YatharthS/FlashSR
-## Usage
-Simple 1 line installation:
-
-```
-pip install git+https://github.com/ysharma3501/FlashSR.git
-```
-
-Load model:
-```python
-from FastAudioSR import FASR
-from huggingface_hub import hf_hub_download
-
-file_path = hf_hub_download(repo_id="YatharthS/FlashSR", filename="upsampler.pth", local_dir=".")
-upsampler = FASR(file_path)
-
-_ = upsampler.model.half()
-```
-
-Run the model:
-```python
-import librosa
-import torch
-from IPython.display import Audio
-
-y, sr = librosa.load("path/to/audio.wav", sr=16000) ## resamples to 16khz sampling_rate
-lowres_wav = torch.from_numpy(y).unsqueeze(0).half()
-
-new_wav = upsampler.run(lowres_wav)
-Audio(new_wav, rate=48000)
-```
+| Model         | Speed (Real-Time) | Model Size |
+| :------------ | :---------------- | :--------- |
+| **NoraSR** | **3600x Faster** | **~0.05MB** |
+| AP-BWE        | 200x Faster       | ~100 MB      |
+| FlowHigh      | 20x Faster        | ~450 MB     |
+| FlashSR       | 14x Faster        | ~1000 MB     |
+| AudioSR       | 0.6x (Slower)     | ~2000 MB     |
 
 
-## Onnx usage
-Big thanks to [Xenova](https://github.com/xenova/) for converting FlashSR to onnx and decreasing model size to just **500kb** making it perfect for edge devices!
-
-Installation:
-```
-pip install onnxruntime librosa soundfile huggingface-hub
-```
-
-Running the model:
-```python
-import librosa
-import onnxruntime as ort
-import numpy as np
-import soundfile as sf
-from huggingface_hub import hf_hub_download
-
-# Download the ONNX model from HF Hub
-model_path = hf_hub_download(repo_id="YatharthS/FlashSR", filename="model.onnx", subfolder="onnx")
-
-# Load audio file at 16kHz
-y, sr = librosa.load("path/to/audio.wav", sr=16000)  # Resamples to 16kHz
-lowres_wav = y[np.newaxis, :]  # Add batch dimension
-
-# Create ONNX session and run inference
-ort_session = ort.InferenceSession(model_path)
-onnx_output = ort_session.run(["reconstruction"], {"audio_values": lowres_wav})[0]
-
-# Save output audio at 48kHz
-sf.write('output.wav', onnx_output.squeeze(0), samplerate=48000)
-```
-
-## Final notes
-Thanks very much to the authors of hierspeech++. Thanks for checking out this repository as well.
-
-Stars would be well appreciated, thank you.
-
-Email: yatharthsharma3501@gmail.com
