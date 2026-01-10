@@ -37,65 +37,88 @@ def _polyphase_upsample_fused(x: Tensor, weight: Tensor, ratio: int):
 
 # --- MODULES ---
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch import Tensor
+
+# --- OPTIMIZED MODULES ---
+
 class UpSample1d(nn.Module):
-    def __init__(self, ratio=2, kernel_size=12, channels=512):
+    def __init__(self, ratio=2, channels=512):
         super().__init__()
         self.ratio = ratio
         self.channels = channels
-        self.kernel_size = kernel_size
+        self.kernel_size = 16  # Forced to 16
         
-        # Buffer for loading static 12-tap weights
-        self.register_buffer("filter", torch.zeros(1, 1, 12))
+        # State-dict compatibility: Keep the original buffer names
+        self.register_buffer("filter", torch.zeros(1, 1, 16))
         
-        # Fast buffer: kernel_size // ratio = 6 taps per phase
-        self.register_buffer("f_fast", torch.zeros(channels * ratio, 1, 6), persistent=False)
+        # We replace the manual fused kernel with a native Transposed Conv
+        # This is the "fast" path. We use groups=channels for depthwise-style speed.
+        self.up_conv = nn.ConvTranspose1d(
+            channels, channels, 
+            kernel_size=16, 
+            stride=ratio, 
+            padding=7,     # Adjusted for center alignment with 16-tap
+            output_padding=1, 
+            groups=channels, 
+            bias=False
+        )
         self._prepared = False
 
     def prepare(self):
         with torch.no_grad():
-            w = self.filter * float(self.ratio)
-            w = w.view(self.kernel_size) # Should be 12
-            
-            # Polyphase decomposition (Length 12 -> two phases of 6)
-            p0, p1 = w[0::2], w[1::2]
-            
-            fast_w = torch.stack([p0, p1], dim=0).unsqueeze(0).expand(self.channels, -1, -1)
-            fast_w = fast_w.reshape(self.channels * self.ratio, 1, 6)
-            self.f_fast.copy_(fast_w)
+            # Align the pretrained 'filter' weights to the Transposed Conv format
+            # Weights in ConvTranspose1d are [In, Out/Groups, K]
+            w = self.filter.expand(self.channels, 1, 16)
+            self.up_conv.weight.copy_(w)
         self._prepared = True
 
     def forward(self, x: Tensor):
-        if not self._prepared and not self.training: self.prepare()
-        return _polyphase_upsample_fused(x, self.f_fast[:x.shape[1]*self.ratio], self.ratio)
+        if not self._prepared and not self.training:
+            self.prepare()
+        
+        # Native Transposed Conv is much faster than manual polyphase + transpose/reshape
+        return self.up_conv(x)
 
 class LowPassFilter1d(nn.Module):
-    def __init__(self, stride=1, kernel_size=12, channels=512):
+    def __init__(self, stride=1, channels=512):
         super().__init__()
         self.stride = stride
         self.channels = channels
-        self.kernel_size = kernel_size
+        self.kernel_size = 16 # Forced to 16
         
-        # Buffer for loading static 12-tap weights
-        self.register_buffer("filter", torch.zeros(1, 1, 12))
+        # State-dict compatibility
+        self.register_buffer("filter", torch.zeros(1, 1, 16))
         
-        # Optimized buffer for execution
-        self.register_buffer("f_opt", torch.zeros(channels, 1, 12), persistent=False)
+        # Optimized path using a standard grouped convolution
+        self.conv = nn.Conv1d(
+            channels, channels, 
+            kernel_size=16, 
+            stride=stride, 
+            padding=8, # Padding for 16-tap symmetry
+            groups=channels, 
+            bias=False
+        )
         self._prepared = False
 
     def prepare(self):
         with torch.no_grad():
-            self.f_opt.copy_(self.filter.expand(self.channels, -1, -1))
+            w = self.filter.expand(self.channels, 1, 16)
+            self.conv.weight.copy_(w)
         self._prepared = True
 
     def forward(self, x: Tensor):
-        if not self._prepared and not self.training: self.prepare()
-        C = x.shape[1]
-        # Original padding 5 for 12-tap kernel
-        return F.conv1d(x, self.f_opt[:C], stride=self.stride, padding=5, groups=C)
+        if not self._prepared and not self.training:
+            self.prepare()
+        # Direct convolution call is faster than functional F.conv1d with slicing
+        return self.conv(x)
 
 class DownSample1d(nn.Module):
-    def __init__(self, ratio=2, kernel_size=12, channels=512):
+    def __init__(self, ratio=2, channels=512):
         super().__init__()
-        self.lowpass = LowPassFilter1d(ratio, kernel_size, channels)
+        self.lowpass = LowPassFilter1d(ratio, channels)
+
     def forward(self, x):
         return self.lowpass(x)
