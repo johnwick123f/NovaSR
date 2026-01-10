@@ -1,79 +1,58 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch import Tensor
-
-# --- MATH ---
-def get_kaiser_filter1d(kernel_size, cutoff):
-    half_size = kernel_size // 2
-    window = torch.kaiser_window(kernel_size, beta=4.558, periodic=False)
-    time = torch.arange(-half_size, half_size) + 0.5
-    f = 2 * cutoff * window * torch.sinc(2 * cutoff * time)
-    return (f / f.sum()).view(1, 1, kernel_size)
-
-# --- MODULES ---
+from torch.nn import functional as F
 
 class UpSample1d(nn.Module):
-    def __init__(self, ratio=2, channels=512):
+    def __init__(self, ratio=2, kernel_size=16): # Forced to 16
         super().__init__()
         self.ratio = ratio
-        self.channels = channels
+        self.kernel_size = 16 
+        self.stride = ratio
         
-        # 1. State-dict matching: Keep at 12 so the loader is happy.
-        self.register_buffer("filter", torch.zeros(1, 1, 12))
+        # These remain for state_dict compatibility
+        self.pad = self.kernel_size // ratio - 1
+        self.pad_left = self.pad * self.stride + (self.kernel_size - self.stride) // 2
+        self.pad_right = self.pad * self.stride + (self.kernel_size - self.stride + 1) // 2
         
-        # 2. Execution weights: Forced to 16. 
-        # Shape [channels, 1, 16] is required for groups=channels.
-        self.register_buffer("f_fast", torch.zeros(channels, 1, 16), persistent=False)
-        self._prepared = False
+        # Placeholder for state_dict loading
+        # The kaiser_sinc_filter1d will be overwritten by your pretrained weights
+        self.register_buffer("filter", torch.zeros(1, 1, self.kernel_size))
 
-    def prepare(self):
-        with torch.no_grad():
-            # Generate 16-tap weights
-            f = get_kaiser_filter1d(16, 0.5 / self.ratio) * self.ratio
-            # Correctly expand to [channels, 1, 16]
-            self.f_fast.copy_(f.expand(self.channels, -1, -1))
-        self._prepared = True
-
-    def forward(self, x: Tensor):
-        if not self._prepared: self.prepare()
-        C = x.shape[1]
-        # Transposed Conv fuses upsampling + filtering into one kernel (Fastest)
-        return F.conv_transpose1d(
-            x, self.f_fast[:C], 
-            stride=self.ratio, padding=7, output_padding=1, groups=C
-        )
-
-class LowPassFilter1d(nn.Module):
-    def __init__(self, stride=1, channels=512):
-        super().__init__()
-        self.stride = stride
-        self.channels = channels
+    def forward(self, x):
+        B, C, T = x.shape
         
-        # Match checkpoint size 12
-        self.register_buffer("filter", torch.zeros(1, 1, 12))
+        # 1. QUALITY IMPROVEMENT: Use reflect padding instead of replicate if possible
+        # but to keep logic IDENTICAL to your pretrained setup, we stick to your pad:
+        x = F.pad(x, (self.pad, self.pad), mode='replicate')
+
+        # 2. SPEED OPTIMIZATION: Polyphase Decomposition
+        # We reshape the filter into [ratio, 1, kernel_size // ratio]
+        # This turns a Transposed Conv (slow) into a standard Conv (fast) + Interleave
+        weight = self.filter.view(self.ratio, self.kernel_size // self.ratio).flip(-1)
+        weight = weight.unsqueeze(1).expand(C * self.ratio, 1, -1)
         
-        # Shape [channels, 1, 16] for groups=channels
-        self.register_buffer("f_opt", torch.zeros(channels, 1, 16), persistent=False)
-        self._prepared = False
-
-    def prepare(self):
-        with torch.no_grad():
-            f = get_kaiser_filter1d(16, 0.5 / self.stride)
-            self.f_opt.copy_(f.expand(self.channels, -1, -1))
-        self._prepared = True
-
-    def forward(self, x: Tensor):
-        if not self._prepared: self.prepare()
-        C = x.shape[1]
-        return F.conv1d(
-            x, self.f_opt[:C], 
-            stride=self.stride, padding=8, groups=C
-        )
+        # Grouped convolution is significantly faster
+        x = F.conv1d(x, weight, groups=C, stride=1) 
+        
+        # Interleave the results to achieve upsampling
+        x = x.view(B, C, self.ratio, -1).permute(0, 1, 3, 2).reshape(B, C, -1)
+        
+        # Slice to match the exact original output length
+        return x[..., self.pad_left:-self.pad_right]
 
 class DownSample1d(nn.Module):
-    def __init__(self, ratio=2, channels=512):
+    def __init__(self, ratio=2, kernel_size=16):
         super().__init__()
-        self.lowpass = LowPassFilter1d(ratio, channels)
+        self.ratio = ratio
+        self.kernel_size = 16
+        # Pre-registering the lowpass logic
+        from .filter import LowPassFilter1d
+        self.lowpass = LowPassFilter1d(cutoff=0.5 / ratio,
+                                      half_width=0.6 / ratio,
+                                      stride=ratio,
+                                      kernel_size=self.kernel_size)
+
     def forward(self, x):
+        # Downsampling optimization: 
+        # Ensure the filter is applied in a single pass with stride
         return self.lowpass(x)
