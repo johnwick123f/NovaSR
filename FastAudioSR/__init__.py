@@ -1,6 +1,7 @@
 import torch
 import os
 from .speechsr import SynthesizerTrn
+from torch.nn.utils import weight_norm
 
 class FASR:
     def __init__(self, ckpt_path):
@@ -32,6 +33,7 @@ class FASR:
         assert os.path.isfile(ckpt_path)
         checkpoint_dict = torch.load(ckpt_path, map_location='cpu')
         model.dec.remove_weight_norm()
+        weight_norm(model.dec.conv_post)
         model.load_state_dict(checkpoint_dict)
         model.eval()
         return model
