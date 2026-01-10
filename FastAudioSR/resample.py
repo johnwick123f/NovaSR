@@ -1,11 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 from torch import Tensor
 
 def get_kaiser_filter1d(kernel_size, cutoff):
-    # Generates a mathematically correct 16-tap filter
     half_size = kernel_size // 2
     window = torch.kaiser_window(kernel_size, beta=4.558, periodic=False)
     time = torch.arange(-half_size, half_size) + 0.5
@@ -18,32 +16,29 @@ class UpSample1d(nn.Module):
         self.ratio = ratio
         self.channels = channels
         
-        # 1. State-dict matching: Keep this at 12 so the loader doesn't crash
+        # Keep at 12 to satisfy your pretrained state_dict loader
         self.register_buffer("filter", torch.zeros(1, 1, 12))
         
-        # 2. Execution weights: Forced to 16-tap for speed/quality
-        # We don't save this in state_dict (persistent=False)
+        # Execution weight: [In_channels, Out_per_group, K]
+        # For ConvTranspose1d depthwise, Out_per_group must be 1.
         self.register_buffer("f_fast", torch.zeros(channels, 1, 16), persistent=False)
         self._prepared = False
 
     def prepare(self):
         with torch.no_grad():
-            # Generate new 16-tap weights regardless of what was in 'filter'
+            # Force 16-tap math
             f = get_kaiser_filter1d(16, 0.5 / self.ratio) * self.ratio
+            # Shape for Transposed Conv (depthwise): [C, 1, 16]
             self.f_fast.copy_(f.expand(self.channels, -1, -1))
         self._prepared = True
 
     def forward(self, x: Tensor):
         if not self._prepared: self.prepare()
-        
-        # Transposed convolution is the fastest hardware path for upsampling
-        # Padding 7/8 centers the 16-tap kernel
+        C = x.shape[1]
+        # Groups must equal C for depthwise. Weight is [C, 1, 16].
         return F.conv_transpose1d(
-            x, self.f_fast[:x.shape[1]], 
-            stride=self.ratio, 
-            padding=7, 
-            output_padding=1, 
-            groups=x.shape[1]
+            x, self.f_fast[:C], 
+            stride=self.ratio, padding=7, output_padding=1, groups=C
         )
 
 class LowPassFilter1d(nn.Module):
@@ -55,7 +50,8 @@ class LowPassFilter1d(nn.Module):
         # Match checkpoint size 12
         self.register_buffer("filter", torch.zeros(1, 1, 12))
         
-        # Execute with 16
+        # Execution weight: [Out_channels, In_per_group, K]
+        # For Conv1d depthwise, In_per_group must be 1.
         self.register_buffer("f_opt", torch.zeros(channels, 1, 16), persistent=False)
         self._prepared = False
 
@@ -67,13 +63,11 @@ class LowPassFilter1d(nn.Module):
 
     def forward(self, x: Tensor):
         if not self._prepared: self.prepare()
-        
-        # Standard grouped conv is faster than manual padding/slicing logic
+        C = x.shape[1]
+        # Weight shape [C, 1, 16] works for groups=C
         return F.conv1d(
-            x, self.f_opt[:x.shape[1]], 
-            stride=self.stride, 
-            padding=8, 
-            groups=x.shape[1]
+            x, self.f_opt[:C], 
+            stride=self.stride, padding=8, groups=C
         )
 
 class DownSample1d(nn.Module):
