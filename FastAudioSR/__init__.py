@@ -34,7 +34,7 @@ class FASR:
         checkpoint_dict = torch.load(ckpt_path, map_location='cpu')
         model.dec.remove_weight_norm()
         weight_norm(model.dec.conv_post)
-        model.load_state_dict(checkpoint_dict)
+        model.load_state_dict(checkpoint_dict, strict=False)
         model.eval()
         return model
 
