@@ -101,7 +101,7 @@ class Generator(torch.nn.Module):
     def forward(self, x, g=None):
         x = self.conv_pre(x)
 
-        x = F.interpolate(x, int(x.shape[-1] * 6), mode='linear')
+        x = F.interpolate(x, int(x.shape[-1] * 3), mode='linear')
 
         xs = self.resblocks[0](x)
 
