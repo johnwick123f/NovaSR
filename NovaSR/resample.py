@@ -101,7 +101,7 @@ class UpSample1d(nn.Module):
         self.pad = self.kernel_size // ratio - 1
         self.pad_left = self.pad * self.stride + (self.kernel_size - self.stride) // 2
         self.pad_right = self.pad * self.stride + (self.kernel_size - self.stride + 1) // 2
-        filter = kaiser_sinc_filter1d(cutoff=0.5 / ratio,
+        filter = kaiser_sinc_filter1d(cutoff=0.53 / ratio,
                                       half_width=0.6 / ratio,
                                       kernel_size=self.kernel_size)
         self.register_buffer("filter", filter)
@@ -123,7 +123,7 @@ class DownSample1d(nn.Module):
         super().__init__()
         self.ratio = ratio
         self.kernel_size = int(6 * ratio // 2) * 2 if kernel_size is None else kernel_size
-        self.lowpass = LowPassFilter1d(cutoff=0.5 / ratio,
+        self.lowpass = LowPassFilter1d(cutoff=0.53 / ratio,
                                        half_width=0.6 / ratio,
                                        stride=ratio,
                                        kernel_size=self.kernel_size)
