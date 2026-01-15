@@ -39,6 +39,10 @@ Comparisons were done on A100 gpu. Higher realtime means faster processing speed
 | FlashSR       | 14x realtime        | ~1000 MB     |
 | AudioSR       | 0.6x realtime    | ~2000 MB     |
 
+### Examples
+Please check the [huggingface model](https://huggingface.co/YatharthS/NovaSR) for a few examples. 
+
+
 
 ### Usage
 You can try it on [huggingface spaces](https://huggingface.co/spaces/YatharthS/NovaSR) or locally.
